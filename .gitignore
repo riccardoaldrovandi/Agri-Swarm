@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+
+# PyTorch
+models/*.pth
+
+# Data
+data/raw/
+data/processed/
+
+# Various
+.DS_Store
+.ipynb_checkpoints/
