@@ -14,12 +14,12 @@ class Paths:
     # Maps our CNN class indices to the actual raw data directories.
     # This acts as the bridge between the simulated environment and our real image data.
     CLASS_LABELS = {
-        0: "data/raw/apple",
-        1: "data/raw/banana",
-        2: "data/raw/orange",
-        3: "data/raw/rottenapples",
-        4: "data/raw/rottenbanana",
-        5: "data/raw/rottenoranges"
+        0: "data/raw/test/apple",
+        1: "data/raw/test/banana",
+        2: "data/raw/test/orange",
+        3: "data/raw/test/rottenapples",
+        4: "data/raw/test/rottenbanana",
+        5: "data/raw/test/rottenoranges"
     }
 
 class CellType:
