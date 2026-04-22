@@ -1,0 +1,9 @@
+# Core Computation & Grid Physics
+numpy>=1.26.0
+
+# 2D Simulation Engine & UI
+pygame>=2.6.1
+
+# Deep Learning (Perception Module)
+torch>=2.0.0
+torchvision>=0.15.0
