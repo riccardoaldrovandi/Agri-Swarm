@@ -1,0 +1,10 @@
+{
+    "max_trials": 1,
+    "radius_threshold": 8,
+    "nectar_exponent": 1.75,
+    "metrics": {
+        "fitness": 2370,
+        "harvested_fruits": 237,
+        "ticks_taken": 800
+    }
+}

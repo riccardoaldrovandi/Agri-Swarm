@@ -20,9 +20,10 @@ class ABCOptimizer():
     Implements the Artificial Bee Colony optimization algorithm.
     Now upgraded with a Tabu Search memory to drastically improve late-game efficiency.
     """
-    def __init__(self, grid_width, grid_height, max_trials=3, radius_threshold=3):
+    def __init__(self, grid_width, grid_height, max_trials=3, radius_threshold=3,nectar_exponent=1.5):
         self.grid_width = grid_width
         self.grid_height = grid_height
+        self.nectar_exponent = nectar_exponent  # Controls how much bigger clusters attract more attention
 
         # 'limit': if a source is searched 'max_trials' times without finding fruit, we abandon it.
         self.max_trials = max_trials 
@@ -40,7 +41,7 @@ class ABCOptimizer():
         Registers or updates a food source. 
         Uses exponential calculation so big clusters attract much more attention.
         """
-        calculated_nectar = nectar_value * (fruit_count ** 1.5)
+        calculated_nectar = nectar_value * (fruit_count ** self.nectar_exponent)
         
         for fs in self.food_sources:
             distance = abs(fs.x - x) + abs(fs.y - y) 
@@ -83,6 +84,35 @@ class ABCOptimizer():
                 
         # Failsafe: if the map is almost entirely explored, just pick a random spot
         return (random.randint(0, self.grid_width - 1), random.randint(0, self.grid_height - 1))
+
+    def mark_scanned_area(self, center_x, center_y, protected_positions, radius=2):
+        """
+        FIX 3: Registers all cells within a scanned perimeter as explored in the
+        collective Tabu List, with the exception of confirmed fresh-fruit locations.
+
+        The old approach added only the single target cell to explored_empty_cells,
+        meaning a scout's 5x5 scan eliminated just 1 out of 25 visible cells from
+        the future search space. This method eliminates all 25 at once (minus any
+        confirmed fruit sites), making the Tabu List grow 25× faster per scan.
+
+        Args:
+            center_x, center_y  : The drone's current position (scan centre).
+            protected_positions : A set of (x, y) coords confirmed to hold fresh,
+                                  unharvested fruit. These are excluded so the Tabu
+                                  List never "poisons" an active harvest site.
+            radius              : Scan radius; must match the value in get_local_view.
+        """
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                nx, ny = center_x + dx, center_y + dy
+
+                # Respect grid boundaries — the drone's camera cannot see off-map.
+                if 0 <= nx < self.grid_width and 0 <= ny < self.grid_height:
+
+                    # Do NOT mark a cell as empty if a fresh fruit was confirmed there.
+                    # Doing so would prevent future Onlookers from being sent to harvest it.
+                    if (nx, ny) not in protected_positions:
+                        self.explored_empty_cells.add((nx, ny))
 
     def report_search_result(self, x, y, found_fruit):
         """

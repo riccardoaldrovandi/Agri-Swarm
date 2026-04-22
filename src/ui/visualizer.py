@@ -1,5 +1,6 @@
 import pygame
 import sys
+from src.swarm.drone import DroneState,ABCRole
 
 # Define a color palette for the simulation
 COLORS = {
@@ -80,11 +81,11 @@ class Visualizer:
             
             # Change color based on state/role hierarchy
             color = COLORS['DRONE']
-            if drone.state == "harvesting":
+            if drone.state == DroneState.HARVESTING:
                 color = COLORS['DRONE_HARVESTING']
-            elif drone.state == "returning":
+            elif drone.state == DroneState.RETURNING:
                 color = COLORS['DRONE_RETURNING']
-            elif drone.abc_role == "scout":
+            elif drone.abc_role == ABCRole.SCOUT:
                 color = COLORS['DRONE_SCOUT']
                 
             pygame.draw.rect(self.screen, color, rect)
@@ -94,10 +95,13 @@ class Visualizer:
             pygame.draw.rect(self.screen, (0, 255, 0), (rect.x, rect.y - 3, battery_w, 2))
 
     def update(self):
-        """Refreshes the display and handles basic events."""
+        """
+        Refreshes the display and caps the frame rate.
+
+        Event handling has been intentionally removed from here and centralised in
+        main.py. pygame.event.get() empties the event queue — having two callers
+        meant the QUIT event was consumed silently by the visualizer (triggering a
+        raw sys.exit()) and never reached main.py's clean-shutdown logic.
+        """
         pygame.display.flip()
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-        self.clock.tick(10) # 10 FPS
+        self.clock.tick(10)  # 10 FPS cap

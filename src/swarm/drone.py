@@ -27,7 +27,7 @@ class Drone:
     It combines physical constraints (battery, payload, movement) with 
     swarm intelligence (ABC roles) and path planning (A* search).
     """
-    def __init__(self, drone_id, start_x, start_y, max_battery=100):
+    def __init__(self, drone_id, start_x, start_y, max_battery=100, max_payload=5):
         self.drone_id = drone_id
         self.x = start_x
         self.y = start_y
@@ -55,24 +55,49 @@ class Drone:
 
         # --- Physical Constraints ---
         self.payload = 0           # Current number of fruits carried
-        self.max_payload = 3       # Maximum carrying capacity (3 forces frequent returns to base)
+        self.max_payload = max_payload       # Maximum carrying capacity
         self.harvest_timer = 0     # Countdown timer for the harvesting action
         self.harvest_duration = 5  # It costs 5 simulation ticks to physically pick one fruit
-    
-    def scan_environment(self, grid_world, classifier):
+
+        # --- FIX 1: In-Transit Scan Cooldown ---
+        # Tracks how many ticks have elapsed since the drone last performed a passive scan.
+        # A value of 5 is mathematically optimal: with a scan radius of 2 (covering ±2 cells),
+        # moving 5 cells between scans produces contiguous, non-overlapping coverage strips,
+        # maximising discovery rate without redundant CNN calls.
+        self._scan_cooldown = 0
+
+        # --- A* Path Cache ---
+        # Instead of running A* every single tick (O(n log n) per move), we compute the
+        # full path once when a new target is acquired and store it here. Each tick we
+        # simply pop and execute the next step from this list, reducing A* invocations
+        # from O(path_length) to O(1) per trip. The cache is invalidated automatically
+        # when the target changes or a step is physically blocked.
+        self._cached_path = []         # Sequence of (dx, dy) moves to reach the current target
+        self._cached_path_target = None # The target (x, y) this path was computed for
+
+        # Tracks consecutive ticks where no valid path exists to the target.
+        # Initialized here to avoid lazy hasattr checks inside the hot path.
+        self.stuck_counter = 0
+
+    def scan_environment(self, grid_world, classifier, abc_optimizer):
         """
         Simulates the drone's downward-facing camera.
-        It grabs a local slice of the grid, checks for unharvested fruits, 
+        It grabs a local slice of the grid, checks for unharvested fruits,
         and uses the CNN to classify if they are fresh.
+
+        FIX 2: Any confirmed fresh fruit is immediately broadcast to the Hive Mind
+                so that all Onlooker bees can exploit the discovery, not just this drone.
+        FIX 3: All cells in the scan area that contain no confirmed fresh fruit are
+                registered in the collective Tabu List, preventing future wasted scout trips.
         """
         # Optimization: If our backpack is already full, we don't care about finding new fruit right now.
         # We save CPU cycles by skipping the CNN inference.
         if self.payload >= self.max_payload:
             return
-        
+
         # Get a 5x5 grid slice (radius=2) around the drone's current position.
         _, visible_fruits = grid_world.get_local_view(self.x, self.y, radius=2)
-        
+
         for pos, fruit_data in visible_fruits.items():
             # Only process fruits we haven't already memorized in this session.
             if pos not in self.known_fresh_fruits:
@@ -80,11 +105,34 @@ class Drone:
                 if image_path:
                     # Pass the real image through our trained CNN.
                     predicted_class, confidence = classifier.predict(image_path)
-                    
+
                     # If the AI is highly confident it's fresh, commit it to local memory.
                     if "fresh" in predicted_class and confidence > 0.7:
                         self.known_fresh_fruits[pos] = confidence
                         print(f"[Drone {self.drone_id}] spotted fresh fruit at {pos} (Conf: {confidence:.2f})")
+
+                        # --- FIX 2: HIVE MIND BROADCAST ON DISCOVERY ---
+                        # Previously, this fruit would stay locked in this drone's private memory
+                        # until it physically harvested it. Now we immediately inform the ABC
+                        # Optimizer, so waiting Onlooker bees can be dispatched to this location
+                        # right away — turning one discovery into a coordinated exploitation.
+                        abc_optimizer.register_food_source(pos[0], pos[1], fruit_count=1)
+
+        # --- FIX 3: AREA-WIDE TABU LIST UPDATE ---
+        # After the scan, we mark every cell in the 5x5 window that contains NO
+        # unharvested fruit as permanently explored, so scouts skip it in future.
+        # This grows the collective Tabu List up to 25x faster per scan.
+        #
+        # IMPORTANT — why we protect ALL of visible_fruits, not just known_fresh_fruits:
+        # The CNN has a ~6% error rate and a confidence gate (>0.7). Fruits that are
+        # fresh but classified with low confidence, misclassified as rotten, or lack an
+        # image_path entirely would be ABSENT from known_fresh_fruits. If we used
+        # known_fresh_fruits as the protection set, those cells would be wrongly added
+        # to the Tabu List and become permanently unreachable — directly reducing the
+        # efficiency ceiling. Using visible_fruits (any unharvested fruit, regardless
+        # of CNN verdict) is the only safe contract: only truly empty cells get blacklisted.
+        protected_cells = set(visible_fruits.keys())
+        abc_optimizer.mark_scanned_area(self.x, self.y, protected_cells, radius=2)
     
     def move(self, dx, dy, grid_world):
         """
@@ -121,7 +169,7 @@ class Drone:
         # We add a safety margin of 7 to the strict distance.
         # Why 7? 5 ticks are needed if it decides to harvest right now, 
         # plus 2 ticks as a buffer for pathfinding around sudden obstacles.
-        if self.battery < distance_to_base + 7:
+        if self.battery <= distance_to_base + 7:
             self.state = DroneState.RETURNING
             return True
         return False
@@ -164,24 +212,63 @@ class Drone:
         return [] # Returns an empty list if the target is completely boxed in and unreachable.
     
     def _move_towards_target(self, grid_world):
-        """Pathfinding execution wrapper with traffic tolerance."""
-        if not self.target_pos: return
-        path = self._plan_path_astar(grid_world, (self.x, self.y), self.target_pos)
-        if path:
-            dx, dy = path[0]
-            self.move(dx, dy, grid_world)
-            self.stuck_counter = 0 # Reset stuck counter if we moved
-        else:
-            # We are blocked (likely by another drone).
-            # Don't drop the target immediately! Wait a few ticks.
-            if not hasattr(self, 'stuck_counter'):
+        """
+        Pathfinding execution wrapper with A* path caching.
+
+        Previously, A* was invoked on every single tick, re-solving the full shortest-path
+        problem from scratch even when the drone was simply following a straight corridor.
+        For a 40x40 grid this is wasteful: a 60-step trip triggered A* 60 times.
+
+        Now A* runs ONCE when a new target is acquired (or when the cached path is
+        invalidated). Each subsequent tick just pops the next (dx, dy) step from the
+        pre-computed list — O(1) instead of O(n log n).
+
+        Invalidation rules (correctness guarantees):
+          1. Target changed  → old path leads to the wrong place; recompute immediately.
+          2. Move failed     → drone is stuck (dead battery or unexpected obstacle);
+                               discard the stale path so A* replans from the true position.
+          3. Path exhausted  → target is unreachable; stuck_counter triggers abandonment.
+        """
+        if not self.target_pos:
+            return
+
+        # --- CACHE INVALIDATION (Rule 1) ---
+        # If the target has changed since the path was computed, the cached moves lead
+        # to the wrong destination. Clear immediately so A* replans on this tick.
+        if self._cached_path_target != self.target_pos:
+            self._cached_path = []
+            self._cached_path_target = self.target_pos
+
+        # --- PATH COMPUTATION (lazy, runs only when cache is empty) ---
+        # This is the expensive call. It fires once per trip, not once per step.
+        if not self._cached_path:
+            self._cached_path = self._plan_path_astar(grid_world, (self.x, self.y), self.target_pos)
+
+        # --- EXECUTION ---
+        if self._cached_path:
+            dx, dy = self._cached_path.pop(0)
+            moved = self.move(dx, dy, grid_world)
+
+            if moved:
+                # Successful step — the path is being followed correctly.
                 self.stuck_counter = 0
-            
+            else:
+                # --- CACHE INVALIDATION (Rule 2) ---
+                # The step was blocked (e.g. battery critically low, or an obstacle
+                # was placed after path computation). Discard the now-stale path so
+                # A* will replan from the drone's ACTUAL current position next tick.
+                self._cached_path = []
+
+        else:
+            # --- STUCK DETECTION (Rule 3) ---
+            # A* returned an empty path: the target is completely boxed in and
+            # unreachable. Don't drop the target immediately — wait several ticks
+            # in case temporary congestion clears. Give up only after 5 failed ticks.
             self.stuck_counter += 1
-            
-            # Only give up on the target if we've been stuck for 5 consecutive ticks
+
             if self.stuck_counter > 5 and self.target_pos != grid_world.base_pos:
                 self.target_pos = None
+                self._cached_path_target = None
                 self.stuck_counter = 0
 
     def step(self, grid_world, classifier, abc_optimizer):
@@ -264,6 +351,22 @@ class Drone:
             return # We are done processing this frame.
 
         # =====================================================================
+        # 0.5. IN-TRANSIT PERCEPTION (Passive Scanning Phase)
+        # =====================================================================
+        # Every 5 ticks, the drone's downward camera activates regardless of its
+        # current destination. This turns every flight path — whether exploring,
+        # or even returning to base with a full load — into an opportunistic
+        # scouting mission. Discoveries are shared with the Hive Mind (FIX 2) and
+        # empty cells are added to the collective Tabu List (FIX 3), dramatically
+        # accelerating late-game convergence without adding expensive A* replanning.
+        # The interval of 5 matches the scan radius (2), producing seamless,
+        # gap-free coverage strips along the drone's travel path.
+        self._scan_cooldown += 1
+        if self._scan_cooldown >= 5:
+            self.scan_environment(grid_world, classifier, abc_optimizer)
+            self._scan_cooldown = 0
+
+        # =====================================================================
         # 1. SURVIVAL & LOGISTICS (Return to Base Phase)
         # =====================================================================
         # Two triggers force a return home: Critical battery OR a full backpack.
@@ -326,8 +429,12 @@ class Drone:
         # Have we arrived at our destination coordinate?
         if (self.x, self.y) == self.target_pos:
             
-            # Look around with the CNN
-            self.scan_environment(grid_world, classifier)
+            # Look around with the CNN to catalogue the immediate area.
+            # Passing abc_optimizer enables FIX 2 (hive broadcast) and FIX 3 (area tabu).
+            # Reset the passive scan timer so the very next tick doesn't redundantly
+            # re-scan the same 5x5 block we just fully analysed at arrival.
+            self.scan_environment(grid_world, classifier, abc_optimizer)
+            self._scan_cooldown = 0
             
             # --- PRE-HARVEST CHECK ---
             # Don't blindly start the 5-tick harvest timer. Verify the environment 
