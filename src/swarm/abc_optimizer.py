@@ -1,17 +1,15 @@
 import numpy as np
 import random
 
-
 class FoodSource():
     """
     Represents a discovered cluster of fresh fruits on the grid.
     In biology: A flower patch. In our simulation: A target coordinate.
     """
-
     def __init__(self, x, y, nectar=1.0):
         self.x = x
         self.y = y
-        self.nectar = nectar  # Fitness: Amount of fresh fruit found here
+        self.nectar = nectar  # Fitness: Attractiveness of this coordinate
         self.trials = 0       # Counter for the abandonment mechanism (Limit phase)
 
     def __repr__(self):
@@ -19,101 +17,92 @@ class FoodSource():
 
 class ABCOptimizer():
     """
-    Implements the Artificial Bee Colony optimization algorithm to help drones decide where to explore next.
-    In our context, "food sources" are promising coordinates with fresh fruits.
+    Implements the Artificial Bee Colony optimization algorithm.
+    Now upgraded with a Tabu Search memory to drastically improve late-game efficiency.
     """
-    
-    def __init__(self, grid_width, grid_height, max_trials=5, radius_threshold=3):
+    def __init__(self, grid_width, grid_height, max_trials=3, radius_threshold=3):
         self.grid_width = grid_width
         self.grid_height = grid_height
 
-        # --- ABC Hyperparameters ---
-        # 'limit': if a source is searched 'max_trials' times without new yields, it is abandoned.
+        # 'limit': if a source is searched 'max_trials' times without finding fruit, we abandon it.
         self.max_trials = max_trials 
-        
-        # Distance within which two discovered fruits are considered the SAME food source cluster
         self.radius_threshold = radius_threshold 
         
-        # Global memory of the swarm: List of active FoodSource objects
         self.food_sources = []
+        
+        # --- TABU LIST ---
+        # A collective memory of all the coordinates the swarm has confirmed are completely empty.
+        # Scouts will not be sent to these coordinates, preventing endless wandering.
+        self.explored_empty_cells = set()
     
-    def register_food_source(self, x, y, nectar_value=1.0,fruit_count=1):
+    def register_food_source(self, x, y, nectar_value=1.0, fruit_count=1):
         """
-        Nectar value is based on how many fruits were actually spotted.
-        More fruits = more bees will be attracted (Onlookers).
+        Registers or updates a food source. 
+        Uses exponential calculation so big clusters attract much more attention.
         """
-
-        nectar_value = nectar_value * fruit_count
-        # 1. Check if this fruit belongs to a cluster we already know about
+        calculated_nectar = nectar_value * (fruit_count ** 1.5)
+        
         for fs in self.food_sources:
-            # Using Manhattan distance for grid logic
             distance = abs(fs.x - x) + abs(fs.y - y) 
-            
             if distance <= self.radius_threshold:
-                # We found MORE fruit at an existing source!
-                fs.nectar += nectar_value # Increase its attractiveness
-                fs.trials = 0             # Reset abandonment counter
+                fs.nectar += calculated_nectar 
+                fs.trials = 0             
                 return
                 
-        # 2. If it's a completely new area, add it to the memory as a new source
-        self.food_sources.append(FoodSource(x, y, nectar_value))
+        self.food_sources.append(FoodSource(x, y, calculated_nectar))
     
     def get_onlooker_target(self):
         """
-        OnlookerBeePhase():
-        Onlooker bees select a food source to exploit based on a probability 
-        proportional to its nectar value (Roulette Wheel Selection).
-        
-        Returns:
-            tuple (x, y) of the chosen food source, or None if no sources exist.
+        Onlooker bees select a food source based on Roulette Wheel Selection.
+        High nectar = High probability of being chosen.
         """
-        # If the swarm hasn't discovered any food sources yet, 
-        # there is nothing to look at. The drone should become a Scout instead.
         if not self.food_sources:
             return None
             
-        # Calculate the total fitness (sum of all nectar) of the known swarm memory
         total_nectar = sum(fs.nectar for fs in self.food_sources)
-        
-        # Edge case: If for some reason total nectar is 0, avoid division by zero
         if total_nectar == 0:
             return None
             
-        # Calculate the probability Pi for each food source
         probabilities = [fs.nectar / total_nectar for fs in self.food_sources]
-        
-        # np.random.choice automatically handles the Roulette Wheel Selection!
-        # It picks a FoodSource object from the list, weighted by our probabilities list.
         chosen_fs = np.random.choice(self.food_sources, p=probabilities)
         
         return (chosen_fs.x, chosen_fs.y)
 
     def get_scout_target(self):
         """
-        ABC Theory: Scout Bee Phase (Exploration)
-        Generates a completely random coordinate on the grid for exploration.
+        Generates a coordinate for exploration, leveraging the Tabu List to 
+        avoid wasting time on known empty sectors.
         """
-        random_x = random.randint(0, self.grid_width - 1)
-        random_y = random.randint(0, self.grid_height - 1)
-        return (random_x, random_y)
+        # Try up to 50 times to find a cell that isn't on the "Empty/Tabu" list
+        for _ in range(50):
+            rx = random.randint(0, self.grid_width - 1)
+            ry = random.randint(0, self.grid_height - 1)
+            
+            if (rx, ry) not in self.explored_empty_cells:
+                return (rx, ry)
+                
+        # Failsafe: if the map is almost entirely explored, just pick a random spot
+        return (random.randint(0, self.grid_width - 1), random.randint(0, self.grid_height - 1))
 
     def report_search_result(self, x, y, found_fruit):
         """
-        ABC Theory: Employed Bee Phase & Limit Mechanism
-        Drones report back after visiting a source. If the source is empty,
-        the trials counter increases. If it hits the limit, the source is abandoned.
+        Called when an Employed bee finishes investigating a cell.
+        Handles the abandonment limit AND updates the Tabu List.
         """
         for fs in self.food_sources:
             if abs(fs.x - x) + abs(fs.y - y) <= self.radius_threshold:
                 if found_fruit:
-                    fs.trials = 0 # Success! Reset trials.
+                    fs.trials = 0 
                 else:
-                    fs.trials += 1 # Failure! Increment trials.
+                    fs.trials += 1 
                     
-        # Abandonment Phase: Remove exhausted food sources
+        # If the cell yielded nothing, mark it as a dead zone permanently (Tabu Search)
+        if not found_fruit:
+            self.explored_empty_cells.add((x, y))
+                    
+        # Remove exhausted food sources
         abandoned_count = len([fs for fs in self.food_sources if fs.trials >= self.max_trials])
         if abandoned_count > 0:
-            print(f"🐝 [Swarm Intel] Abandoned {abandoned_count} exhausted food source(s). Employed bees will become Scouts.")
+            print(f"🐝 [Swarm Intel] Abandoned {abandoned_count} exhausted patch(es).")
         
-        # Keep only the valid sources
         self.food_sources = [fs for fs in self.food_sources if fs.trials < self.max_trials]

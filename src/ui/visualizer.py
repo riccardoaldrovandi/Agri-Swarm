@@ -5,15 +5,15 @@ import sys
 COLORS = {
     'BACKGROUND': (30, 30, 30),
     'GRID': (50, 50, 50),
-    'BASE': (0, 150, 255),    # Bright Blue
-    'TREE': (34, 139, 34),    # Forest Green
-    'FRUIT_FRESH': (255, 50, 50), # Red
-    'FRUIT_ROTTEN': (139, 69, 19), # Brown
-    'OBSTACLE': (100, 100, 100), # Grey
-    'DRONE': (255, 255, 255),    # White
+    'BASE': (0, 150, 255),        # Bright Blue
+    'TREE_EMPTY': (139, 69, 19),  # Brown (Picked clean)
+    'TREE_FRESH': (34, 139, 34),  # Forest Green (Has fresh fruit!)
+    'TREE_ROTTEN': (128, 128, 0), # Olive Green (Only rotten fruit left)
+    'OBSTACLE': (100, 100, 100),  # Grey
+    'DRONE': (255, 255, 255),     # White
     'DRONE_SCOUT': (0, 255, 255), # Cyan
-    'DRONE_HARVESTING': (0, 255, 0), # Green
-    'DRONE_RETURNING': (255, 165, 0) # Orange (Low battery)
+    'DRONE_HARVESTING': (0, 255, 0), # Green (Currently picking)
+    'DRONE_RETURNING': (255, 165, 0)   # Orange (Low battery / Full)
 }
 
 class Visualizer:
@@ -43,17 +43,33 @@ class Visualizer:
                 
                 cell_type = grid_world.grid[x, y]
                 
-                # Render specific cell types
                 if cell_type == 1: # BASE_STATION
                     pygame.draw.rect(self.screen, COLORS['BASE'], rect)
+                    
                 elif cell_type == 2: # TREE
-                    pygame.draw.circle(self.screen, COLORS['TREE'], rect.center, self.cell_size // 2 - 2)
-                    # Draw fruit if present on tree
+                    # Default to an empty, brown tree trunk color
+                    tree_color = COLORS['TREE_EMPTY']
+                    
                     if (x, y) in grid_world.fruits:
-                        fruit = grid_world.fruits[(x, y)]
-                        if not fruit['harvested']:
-                            f_color = COLORS['FRUIT_FRESH'] if fruit['state'] == "fresh" else COLORS['FRUIT_ROTTEN']
-                            pygame.draw.circle(self.screen, f_color, rect.center, self.cell_size // 4)
+                        fruits_list = grid_world.fruits[(x, y)]
+                        
+                        # Tally up what is physically left on the tree branches
+                        fresh_count = sum(1 for f in fruits_list if not f['harvested'] and f['state'] == "fresh")
+                        rotten_count = sum(1 for f in fruits_list if not f['harvested'] and f['state'] == "rotten")
+                        
+                        # Change the tree canopy color based on its contents
+                        if fresh_count > 0:
+                            tree_color = COLORS['TREE_FRESH']
+                        elif rotten_count > 0:
+                            tree_color = COLORS['TREE_ROTTEN']
+                            
+                    # Draw the base tree
+                    pygame.draw.circle(self.screen, tree_color, rect.center, self.cell_size // 2 - 2)
+                    
+                    # If it's a good tree, add a tiny red dot so the user can easily spot it
+                    if tree_color == COLORS['TREE_FRESH']:
+                        pygame.draw.circle(self.screen, (255, 50, 50), rect.center, 3)
+                        
                 elif cell_type == 3: # OBSTACLE
                     pygame.draw.rect(self.screen, COLORS['OBSTACLE'], rect)
 
@@ -62,17 +78,18 @@ class Visualizer:
         for drone in drones:
             rect = pygame.Rect(drone.x * self.cell_size, drone.y * self.cell_size, self.cell_size, self.cell_size)
             
-            # Change color based on state/role
+            # Change color based on state/role hierarchy
             color = COLORS['DRONE']
-            if drone.state == "returning":
+            if drone.state == "harvesting":
+                color = COLORS['DRONE_HARVESTING']
+            elif drone.state == "returning":
                 color = COLORS['DRONE_RETURNING']
             elif drone.abc_role == "scout":
                 color = COLORS['DRONE_SCOUT']
-            elif drone.state == "harvesting":
-                color = COLORS['DRONE_HARVESTING']
                 
             pygame.draw.rect(self.screen, color, rect)
-            # Small battery bar indicator
+            
+            # Small battery bar indicator (Green line above the drone)
             battery_w = (drone.battery / drone.max_battery) * self.cell_size
             pygame.draw.rect(self.screen, (0, 255, 0), (rect.x, rect.y - 3, battery_w, 2))
 
@@ -83,4 +100,4 @@ class Visualizer:
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
-        self.clock.tick(10) # 10 FPS for visibility
+        self.clock.tick(10) # 10 FPS
