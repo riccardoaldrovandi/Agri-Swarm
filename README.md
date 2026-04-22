@@ -52,3 +52,29 @@ Agri-Swarm/
 ├── models/                     # Trained weights (.pth) and metrics
 └── requirements.txt
 ```
+
+---
+
+## 🚦 Getting Started
+
+1. **Clone the repository:**
+   ```bash
+   git clone [https://github.com/yourusername/Agri-Swarm.git](https://github.com/yourusername/Agri-Swarm.git)
+   cd Agri-Swarm
+
+2. **Install dependencies:**
+    Ensure you have Python 3.8+ installed, then run:
+    '''bash
+    pip install -r requirements.txt
+    '''
+3. **Run the simulation**
+    '''bash
+    python -m src.main
+    '''
+
+## 📄 License
+
+**This project is licensed under the MIT License - see the LICENSE file for details.**
+
+## 
+Developed as a project for the "Intelligent Systems M " course at University of Bologna. Designed for modularity, performance, and real-world agricultural simulation.
