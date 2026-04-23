@@ -1,5 +1,6 @@
 import os
 import json
+import sys
 import time
 from src.environment.grid_world import GridWorld
 from src.perception.inference import FruitClassifier
@@ -117,6 +118,7 @@ def main():
     # Clean Pygame teardown. Without this, the OS window would linger or
     # the process could hang after the simulation loop exits.
     pygame.quit()
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
