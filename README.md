@@ -4,7 +4,7 @@
 
 > University of Bologna — Intelligent Systems M — A.Y. 2025/2026
 
-![Agri-Swarm Demo](INCOLLA_QUI_URL_GITHUB)
+![Agri-Swarm Demo](assets/demo.gif)
 *Scouts (Cyan) explore the orchard, Employed bees (White) harvest trees, Returning drones (Orange) head back to base.*
 
 ---
